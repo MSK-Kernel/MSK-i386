@@ -12,9 +12,6 @@
 uint16_t* VGA = (uint16_t*)0xB8000;
 int cursor = 0;
 
-// VGA text mode cursor uses a position in CHARACTER CELLS.
-// Our cursor is an index in the VGA word array (2 bytes per cell), so we convert with /2.
-
 void print(const char* s);
 void putc(char c);
 
@@ -34,7 +31,6 @@ static inline void set_hw_cursor_cell(int cell_pos) {
     if (cell_pos < 0) cell_pos = 0;
     if (cell_pos > max_cells) cell_pos = max_cells;
 
-    // VGA hardware cursor position is in CHARACTER CELLS.
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(cell_pos & 0xFF));
     outb(0x3D4, 0x0E);
@@ -42,22 +38,19 @@ static inline void set_hw_cursor_cell(int cell_pos) {
 }
 
 void enable_block_cursor() {
-    // 8x16 text mode: solid block cursor (start=0 end=15)
     outb(0x3D4, 0x0A);
     outb(0x3D5, 0x00); // cursor start
 
     outb(0x3D4, 0x0B);
     outb(0x3D5, 0x0F); // cursor end
 
-    // Enable cursor by setting cursor disable bit appropriately.
-    // Reg 0x0A: bits include disable at 5 in standard VGA implementations.
     uint8_t r = inb(0x3D5);
     outb(0x3D4, 0x0A);
     outb(0x3D5, (uint8_t)(r & ~(1 << 5))); // ensure enabled
 }
 
 static inline void sync_cursor_hw() {
-    set_hw_cursor_cell(cursor / 2); // cursor is byte index in VGA memory words (2 bytes per cell)
+    set_hw_cursor_cell(cursor / 2);
 }
 
 // ================= SCREEN =================
@@ -68,7 +61,7 @@ void scroll() {
     for (int i = VGA_WIDTH * (VGA_HEIGHT - 1); i < VGA_WIDTH * VGA_HEIGHT; i++)
         VGA[i] = VGA_COLOR | ' ';
 
-    cursor -= VGA_WIDTH * 2; // cursor is in VGA word-array indices (2 bytes per cell)
+    cursor -= VGA_WIDTH * 2;
     sync_cursor_hw();
 }
 
@@ -105,7 +98,6 @@ void clear() {
 }
 
 // ================= KEYBOARD =================
-
 int shift = 0;
 
 char keymap[128] = {
@@ -255,12 +247,12 @@ void rt(char* name) {
     trim(name);
 
     if (current == 0) {
-        print("\nerror: current folder invalid");
+        print("\nerror: Current folder invalid");
         return;
     }
 
     if (current->file_count <= 0 || current->file_count > MAX_FILES) {
-        print("\nerror: filesystem corrupted");
+        print("\nerror: Filesystem corrupted");
         current->file_count = 0;
         return;
     }
