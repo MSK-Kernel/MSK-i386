@@ -1,33 +1,70 @@
 BITS 32
+
 GLOBAL _start
 EXTERN kernel_main
 
-; ================= MULTIBOOT HEADER =================
-; Must be in first 8KB of file for GRUB
 
 SECTION .multiboot
 ALIGN 4
-    DD 0x1BADB002            ; magic
-    DD 0x00000003            ; flags (align modules + mem info)
-    DD -(0x1BADB002 + 0x00000003) ; checksum
 
-; ================= ENTRY POINT =================
+MB_MAGIC     EQU 0x1BADB002
+MB_FLAGS     EQU 0x00000003
+MB_CHECKSUM  EQU -(MB_MAGIC + MB_FLAGS)
+
+dd MB_MAGIC
+dd MB_FLAGS
+dd MB_CHECKSUM
+
+
+SECTION .multiboot2
+ALIGN 8
+
+MB2_MAGIC      EQU 0xE85250D6
+MB2_ARCH       EQU 0
+MB2_LENGTH     EQU mb2_end - mb2_start
+MB2_CHECKSUM   EQU -(MB2_MAGIC + MB2_ARCH + MB2_LENGTH)
+
+mb2_start:
+
+dd MB2_MAGIC
+dd MB2_ARCH
+dd MB2_LENGTH
+dd MB2_CHECKSUM
+
+; End tag
+dw 0
+dw 0
+dd 8
+
+mb2_end:
+
+
 SECTION .text
+ALIGN 16
 
 _start:
-    cli                      ; disable interrupts
+    cli
 
-    mov esp, stack_top      ; set stack
+    ; Setup stack
+    mov esp, stack_top
+    mov ebp, esp
 
-    call kernel_main        ; jump into C kernel
+    ; Optional: clear direction flag
+    cld
+
+    ; Boot into C kernel
+    call kernel_main
 
 .hang:
+    cli
     hlt
     jmp .hang
 
-; ================= STACK =================
+
 SECTION .bss
 ALIGN 16
+
 stack_bottom:
-    resb 16384              ; 16 KB stack
+    resb 16384        ; 16 KiB stack
+
 stack_top:
