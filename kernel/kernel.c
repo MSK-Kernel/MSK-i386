@@ -79,19 +79,17 @@ void scroll() {
     for (int i = VGA_WIDTH * (VGA_HEIGHT - 1); i < VGA_WIDTH * VGA_HEIGHT; i++)
         VGA[i] = VGA_COLOR | ' ';
 
-    if (cursor >= VGA_WIDTH * 2)
-        cursor -= VGA_WIDTH * 2;
-    else
-        cursor = 0;
-    sync_cursor_hw();
+    cursor = VGA_WIDTH * (VGA_HEIGHT - 1) * 2;
 }
 
 void putc(char c) {
     if (c == '\n') {
         cursor += (VGA_WIDTH * 2) - (cursor % (VGA_WIDTH * 2));
     } else if (c == '\b') {
-        backspace();
-        return;
+        if (cursor > 0) {
+            cursor -= 2;
+            VGA[cursor / 2] = VGA_COLOR | ' ';
+        }
     } else {
         VGA[cursor / 2] = VGA_COLOR | (uint8_t)c;
         cursor += 2;
@@ -99,7 +97,7 @@ void putc(char c) {
 
     if (cursor >= VGA_WIDTH * VGA_HEIGHT * 2)
         scroll();
-
+    
     sync_cursor_hw();
 }
 
@@ -124,6 +122,7 @@ void backspace() {
 
 // ================= KEYBOARD =================
 int shift = 0;
+int caps_lock = 0;
 
 char keymap[128] = {
     0,27,'1','2','3','4','5','6','7','8','9','0','-','=',
@@ -151,15 +150,30 @@ char get_key() {
 
         if (sc == 0x2A || sc == 0x36) { shift = 1; continue; }
         if (sc == 0xAA || sc == 0xB6) { shift = 0; continue; }
+        if (sc == 0x3A) { caps_lock = !caps_lock; continue; }
         if (sc & 0x80) continue;
 
         if (sc >= 128) continue;
-        return shift ? keymap_shift[sc] : keymap[sc];
+        
+        char res = shift ? keymap_shift[sc] : keymap[sc];
+        if (res == 0) continue;
+
+        // Handle Caps Lock for alphabetic characters
+        if (caps_lock) {
+            if (res >= 'a' && res <= 'z') {
+                res -= 32;
+            } else if (res >= 'A' && res <= 'Z') {
+                res += 32;
+            }
+        }
+        
+        return res;
     }
 }
 
 // ================= HELPERS =================
 int streq(const char* a, const char* b) {
+    if (!a || !b) return 0;
     int i = 0;
     while (a[i] && b[i]) {
         if (a[i] != b[i]) return 0;
@@ -169,6 +183,7 @@ int streq(const char* a, const char* b) {
 }
 
 void strncpy_safe(char* dst, const char* src, int n) {
+    if (!dst || !src || n <= 0) return;
     int i = 0;
     while (src[i] && i < n - 1) {
         dst[i] = src[i];
@@ -178,11 +193,13 @@ void strncpy_safe(char* dst, const char* src, int n) {
 }
 
 char* skip(char* s) {
+    if (!s) return NULL;
     while (*s == ' ') s++;
     return s;
 }
 
 void clean(char* s) {
+    if (!s) return;
     int i = 0;
     while (s[i]) {
         if (s[i] == '\n' || s[i] == '\r')
@@ -192,6 +209,7 @@ void clean(char* s) {
 }
 
 void trim(char* s) {
+    if (!s) return;
     int len = 0;
     while (s[len]) len++;
     while (len > 0 && s[len - 1] == ' ') {
@@ -201,6 +219,7 @@ void trim(char* s) {
 }
 
 char* arg(char* s) {
+    if (!s) return NULL;
     while (*s && *s != ' ') s++;
     return skip(s);
 }
@@ -236,13 +255,20 @@ int name_exists(const char* name) {
 }
 
 void init_fs() {
+    for (int i = 0; i < 32; i++) root.name[i] = 0;
     root.name[0] = '/';
-    root.name[1] = 0;
     root.parent = 0;
     root.folder_count = 0;
     root.file_count = 0;
+    for (int i = 0; i < MAX_FOLDERS; i++) root.folders[i] = 0;
     current = &root;
-    for(int i=0; i<MAX_FOLDERS; i++) folder_pool[i].folder_count = -1; // mark unused
+    folder_used = 0;
+    for(int i=0; i<MAX_FOLDERS; i++) {
+        folder_pool[i].folder_count = 0;
+        folder_pool[i].file_count = 0;
+        folder_pool[i].parent = 0;
+        for(int j=0; j<MAX_FOLDERS; j++) folder_pool[i].folders[j] = 0;
+    }
 }
 
 // ================= COMMANDS =================
@@ -264,9 +290,8 @@ void cf(char* name) {
     f->folder_count = 0;
     f->file_count = 0;
     f->parent = current;
-    strncpy_safe(f->name, name, 32);
-
     for (int i = 0; i < MAX_FOLDERS; i++) f->folders[i] = 0;
+    strncpy_safe(f->name, name, 32);
 
     current->folders[current->folder_count++] = f;
 }
@@ -382,12 +407,11 @@ void pwd() {
     Folder* f = current;
     while (f && f != &root) {
         int len = 0;
-        while (f->name[len]) len++;
-        if (len == 0 || pos - len - 1 <= 0) break;
+        while (f->name[len] && len < 31) len++;
+        if (len == 0 || pos <= len + 1) break;
         pos -= len;
         for (int i = 0; i < len; i++) temp[pos + i] = f->name[i];
-        pos--;
-        temp[pos] = '/';
+        temp[--pos] = '/';
         f = f->parent;
     }
     print("\n");
@@ -403,11 +427,9 @@ void mv(char* src, char* dst) {
         return;
     }
 
-    // Check if moving into a folder
     for (int i = 0; i < current->folder_count; i++) {
         Folder* target = current->folders[i];
         if (target && streq(target->name, dst)) {
-            // Move file into folder
             for (int j = 0; j < current->file_count; j++) {
                 if (streq(current->files[j].name, src)) {
                     for(int x=0; x<target->file_count; x++)
@@ -419,7 +441,6 @@ void mv(char* src, char* dst) {
                     return;
                 }
             }
-            // Move folder into folder
             for (int j = 0; j < current->folder_count; j++) {
                 if (current->folders[j] && streq(current->folders[j]->name, src)) {
                     if (target->folder_count >= MAX_FOLDERS) { print("\nerror: Target full"); return; }
@@ -428,6 +449,7 @@ void mv(char* src, char* dst) {
                     target->folders[target->folder_count++] = current->folders[j];
                     current->folders[j]->parent = target;
                     current->folders[j] = current->folders[current->folder_count - 1];
+                    current->folders[current->folder_count - 1] = 0;
                     current->folder_count--;
                     return;
                 }
@@ -437,7 +459,6 @@ void mv(char* src, char* dst) {
 
     if (name_exists(dst)) { print("\nerror: Name exists"); return; }
 
-    // Rename logic
     for (int i = 0; i < current->file_count; i++) {
         if (streq(current->files[i].name, src)) { strncpy_safe(current->files[i].name, dst, 32); return; }
     }
@@ -456,7 +477,6 @@ void cp(char* src, char* dst) {
     for (int i = 0; i < current->folder_count; i++) {
         Folder* target = current->folders[i];
         if (target && streq(target->name, dst)) {
-            // Copy file into folder
             for (int j = 0; j < current->file_count; j++) {
                 if (streq(current->files[j].name, src)) {
                     for(int x=0; x<target->file_count; x++)
@@ -466,14 +486,16 @@ void cp(char* src, char* dst) {
                     return;
                 }
             }
-            // Copy folder into folder
             for (int j = 0; j < current->folder_count; j++) {
                 if (current->folders[j] && streq(current->folders[j]->name, src)) {
                     if (folder_used >= MAX_FOLDERS || target->folder_count >= MAX_FOLDERS) { print("\nerror: Limit reached"); return; }
                     for(int x=0; x<target->folder_count; x++)
                         if(streq(target->folders[x]->name, src)) { print("\nerror: Name exists in target"); return; }
                     Folder* nf = &folder_pool[folder_used++];
-                    nf->parent = target; nf->file_count = current->folders[j]->file_count; nf->folder_count = 0;
+                    nf->parent = target; 
+                    nf->file_count = current->folders[j]->file_count; 
+                    nf->folder_count = 0;
+                    for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
                     strncpy_safe(nf->name, src, 32);
                     for(int x=0; x<nf->file_count; x++) nf->files[x] = current->folders[j]->files[x];
                     target->folders[target->folder_count++] = nf;
@@ -485,7 +507,6 @@ void cp(char* src, char* dst) {
 
     if (name_exists(dst)) { print("\nerror: Name exists"); return; }
 
-    // Copy file to new name
     for (int i = 0; i < current->file_count; i++) {
         if (streq(current->files[i].name, src)) {
             if (current->file_count >= MAX_FILES) { print("\nerror: Limit reached"); return; }
@@ -494,12 +515,14 @@ void cp(char* src, char* dst) {
             return;
         }
     }
-    // Copy folder to new name
     for (int i = 0; i < current->folder_count; i++) {
         if (current->folders[i] && streq(current->folders[i]->name, src)) {
             if (folder_used >= MAX_FOLDERS || current->folder_count >= MAX_FOLDERS) { print("\nerror: Limit reached"); return; }
             Folder* nf = &folder_pool[folder_used++];
-            nf->parent = current; nf->file_count = current->folders[i]->file_count; nf->folder_count = 0;
+            nf->parent = current; 
+            nf->file_count = current->folders[i]->file_count; 
+            nf->folder_count = 0;
+            for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
             strncpy_safe(nf->name, dst, 32);
             for(int x=0; x<nf->file_count; x++) nf->files[x] = current->folders[i]->files[x];
             current->folders[current->folder_count++] = nf;
@@ -511,17 +534,20 @@ void cp(char* src, char* dst) {
 
 // ================= SHELL =================
 static int starts_with(const char* s, const char* cmd) {
+    if (!s || !cmd) return 0;
     int i = 0;
     while (cmd[i]) { if (s[i] != cmd[i]) return 0; i++; }
     return 1;
 }
 
 static char* get_args(char* cmd) {
+    if (!cmd) return NULL;
     while (*cmd && *cmd != ' ') cmd++;
     return skip(cmd);
 }
 
 static char* next_arg(char* s, char* out) {
+    if (!s) return NULL;
     s = skip(s);
     int i = 0;
     while (s[i] && s[i] != ' ' && i < 31) { out[i] = s[i]; i++; }
@@ -532,12 +558,12 @@ static char* next_arg(char* s, char* out) {
 
 void execute(char* cmd) {
     cmd = skip(cmd); clean(cmd);
-    if (starts_with(cmd, "ls")) ls();
-    else if (starts_with(cmd, "cd")) cd(get_args(cmd));
-    else if (starts_with(cmd, "cf")) cf(get_args(cmd));
-    else if (starts_with(cmd, "rf")) rf(get_args(cmd));
-    else if (starts_with(cmd, "rt")) rt(get_args(cmd));
-    else if (starts_with(cmd, "fl") || starts_with(cmd, "lf")) fl(get_args(cmd));
+    if (streq(cmd, "ls") || starts_with(cmd, "ls ")) ls();
+    else if (streq(cmd, "cd") || starts_with(cmd, "cd ")) cd(get_args(cmd));
+    else if (streq(cmd, "cf") || starts_with(cmd, "cf ")) cf(get_args(cmd));
+    else if (streq(cmd, "rf") || starts_with(cmd, "rf ")) rf(get_args(cmd));
+    else if (streq(cmd, "rt") || starts_with(cmd, "rt ")) rt(get_args(cmd));
+    else if (streq(cmd, "fl") || starts_with(cmd, "fl ") || starts_with(cmd, "lf")) fl(get_args(cmd));
     else if (starts_with(cmd, "ct")) {
         char* p = get_args(cmd); char* eq = p;
         while (*eq && *eq != '=') eq++;
@@ -545,7 +571,7 @@ void execute(char* cmd) {
         *eq = 0; ct(p, eq + 1);
     }
     else if (starts_with(cmd, "echo")) echo(cmd + 4);
-    else if (starts_with(cmd, "cl")) clear();
+    else if (streq(cmd, "cl")) clear();
     else if (starts_with(cmd, "mv")) {
         char* args = get_args(cmd); char a[32], b[32];
         args = next_arg(args, a); next_arg(args, b);
@@ -558,7 +584,7 @@ void execute(char* cmd) {
         if (!a[0] || !b[0]) { print("\nerror: Invalid arguments"); return; }
         cp(a, b);
     }
-    else if (starts_with(cmd, "pwd")) pwd();
+    else if (streq(cmd, "pwd")) pwd();
     else if (cmd[0] != 0) print("\nerror: Unknown command");
 }
 
