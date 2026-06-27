@@ -419,64 +419,127 @@ void mv(char* src, char* dst) {
 void cp(char* src, char* dst) {
     src = skip(src); dst = skip(dst);
     trim(src); trim(dst);
-    if (!src[0] || !dst[0] || streq(src, dst)) { print("\nerror: Invalid arguments"); return; }
+    if (!src[0] || !dst[0] || streq(src, dst)) { 
+        print("\nerror: Invalid arguments"); 
+        return; 
+    }
 
+    // Check if destination is an existing folder
     for (int i = 0; i < current->folder_count; i++) {
         Folder* target = current->folders[i];
         if (target && streq(target->name, dst)) {
+            // Copy file into existing folder
             for (int j = 0; j < current->file_count; j++) {
                 if (streq(current->files[j].name, src)) {
-                    if (target->file_count >= MAX_FILES) { print("\nerror: Target full"); return; }
+                    if (target->file_count >= MAX_FILES) { 
+                        print("\nerror: Target full"); 
+                        return; 
+                    }
                     target->files[target->file_count++] = current->files[j];
                     return;
                 }
             }
+            // Copy folder into existing folder
             for (int j = 0; j < current->folder_count; j++) {
                 if (current->folders[j] && streq(current->folders[j]->name, src)) {
-                    if (folder_used >= MAX_FOLDERS || target->folder_count >= MAX_FOLDERS) { print("\nerror: Limit reached"); return; }
+                    if (folder_used >= MAX_FOLDERS || target->folder_count >= MAX_FOLDERS) { 
+                        print("\nerror: Limit reached"); 
+                        return; 
+                    }
+                    
                     Folder* nf = &folder_pool[folder_used++];
                     nf->parent = target; 
                     nf->file_count = 0;
                     nf->folder_count = 0;
-                    for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
                     strncpy_safe(nf->name, src, 32);
-                    for(int x=0; x < current->folders[j]->file_count; x++) {
-                        nf->files[nf->file_count++] = current->folders[j]->files[x];
+                    
+                    // Initialize folder pointers
+                    for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
+                    
+                    // Copy files from source folder
+                    Folder* src_folder = current->folders[j];
+                    for (int x = 0; x < src_folder->file_count && nf->file_count < MAX_FILES; x++) {
+                        nf->files[nf->file_count++] = src_folder->files[x];
                     }
+                    
+                    // Copy sub-folders (one level only to avoid stack issues)
+                    for (int x = 0; x < src_folder->folder_count && nf->folder_count < MAX_FOLDERS; x++) {
+                        if (src_folder->folders[x] && folder_used < MAX_FOLDERS) {
+                            Folder* sub_copy = &folder_pool[folder_used++];
+                            *sub_copy = *src_folder->folders[x];
+                            sub_copy->parent = nf;
+                            nf->folders[nf->folder_count++] = sub_copy;
+                        }
+                    }
+                    
                     target->folders[target->folder_count++] = nf;
                     return;
                 }
             }
-        }
-    }
-
-    if (name_exists(dst)) { print("\nerror: Name exists"); return; }
-
-    for (int i = 0; i < current->file_count; i++) {
-        if (streq(current->files[i].name, src)) {
-            if (current->file_count >= MAX_FILES) { print("\nerror: Limit reached"); return; }
-            File* nf = &current->files[current->file_count++];
-            *nf = current->files[i]; strncpy_safe(nf->name, dst, 32);
+            print("\nerror: Source not found");
             return;
         }
     }
+
+    // Check if destination name already exists
+    if (name_exists(dst)) { 
+        print("\nerror: Name exists"); 
+        return; 
+    }
+
+    // Copy file to new name in same directory
+    for (int i = 0; i < current->file_count; i++) {
+        if (streq(current->files[i].name, src)) {
+            if (current->file_count >= MAX_FILES) { 
+                print("\nerror: Limit reached"); 
+                return; 
+            }
+            current->files[current->file_count] = current->files[i];
+            strncpy_safe(current->files[current->file_count].name, dst, 32);
+            current->file_count++;
+            return;
+        }
+    }
+    
+    // Copy folder to new name in same directory
     for (int i = 0; i < current->folder_count; i++) {
         if (current->folders[i] && streq(current->folders[i]->name, src)) {
-            if (folder_used >= MAX_FOLDERS || current->folder_count >= MAX_FOLDERS) { print("\nerror: Limit reached"); return; }
+            if (folder_used >= MAX_FOLDERS || current->folder_count >= MAX_FOLDERS) { 
+                print("\nerror: Limit reached"); 
+                return; 
+            }
+            
             Folder* nf = &folder_pool[folder_used++];
             nf->parent = current; 
             nf->file_count = 0;
             nf->folder_count = 0;
-            for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
             strncpy_safe(nf->name, dst, 32);
-            for(int x=0; x < current->folders[i]->file_count; x++) {
-                nf->files[nf->file_count++] = current->folders[i]->files[x];
+            
+            // Initialize folder pointers
+            for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
+            
+            // Copy files from source folder
+            Folder* src_folder = current->folders[i];
+            for (int x = 0; x < src_folder->file_count && nf->file_count < MAX_FILES; x++) {
+                nf->files[nf->file_count++] = src_folder->files[x];
             }
+            
+            // Copy sub-folders (one level only to avoid stack issues)
+            for (int x = 0; x < src_folder->folder_count && nf->folder_count < MAX_FOLDERS; x++) {
+                if (src_folder->folders[x] && folder_used < MAX_FOLDERS) {
+                    Folder* sub_copy = &folder_pool[folder_used++];
+                    *sub_copy = *src_folder->folders[x];
+                    sub_copy->parent = nf;
+                    nf->folders[nf->folder_count++] = sub_copy;
+                }
+            }
+            
             current->folders[current->folder_count++] = nf;
             return;
         }
     }
-    print("\nerror: Not found");
+    
+    print("\nerror: Source not found");
 }
 
 // ================= SHELL =================
@@ -506,6 +569,7 @@ static char* next_arg(char* s, char* out) {
 void execute(char* cmd) {
     cmd = skip(cmd); clean(cmd);
     if (streq(cmd, "ls")) ls();
+    else if (streq(cmd, "cd")) cd("");
     else if (starts_with(cmd, "cd ")) cd(get_args(cmd));
     else if (starts_with(cmd, "cf ")) cf(get_args(cmd));
     else if (starts_with(cmd, "rf ")) rf(get_args(cmd));
@@ -542,12 +606,26 @@ void shell() {
         int i = 0;
         while (1) {
             char c = get_key();
-            if (c == '\n') { putc('\n'); break; }
-            if (c == 8) { if (i > 0) { i--; backspace(); } continue; }
-            if (i < 254) { buffer[i++] = c; putc(c); }
+            if (c == '\n') { 
+                putc('\n'); 
+                break; 
+            }
+            if (c == 8) { 
+                if (i > 0) { 
+                    i--; 
+                    backspace(); 
+                } 
+                continue; 
+            }
+            if (i < 254) { 
+                buffer[i++] = c; 
+                putc(c); 
+            }
         }
         buffer[i] = 0;
-        execute(buffer);
+        if (i > 0) {  // Only execute if there's actually a command
+            execute(buffer);
+        }
     }
 }
 
