@@ -480,7 +480,6 @@ void ls() {
     print("\n");
 
     if (current->folder_count == 0 && current->file_count == 0) {
-        print("(empty)\n");
         return;
     }
 
