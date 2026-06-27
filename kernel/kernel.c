@@ -6,11 +6,11 @@
 #define VGA_HEIGHT 25
 
 #define MAX_FOLDERS 32
-#define MAX_FILES 64
+#define MAX_FILES 32 // Reduced to prevent stack overflow
 
 // ================= VGA =================
 uint16_t* VGA = (uint16_t*)0xB8000;
-int cursor = 0; // Now represents character index, not byte offset
+int cursor = 0;
 
 // ================= FORWARD DECLARATIONS =================
 void print(const char* s);
@@ -65,10 +65,6 @@ void enable_block_cursor() {
     outb(0x3D5, 0x00);
     outb(0x3D4, 0x0B);
     outb(0x3D5, 0x0F);
-
-    uint8_t r = inb(0x3D5);
-    outb(0x3D4, 0x0A);
-    outb(0x3D5, (uint8_t)(r & ~(1 << 5)));
 }
 
 // ================= SCREEN =================
@@ -146,24 +142,18 @@ char keymap_shift[128] = {
 char get_key() {
     while (1) {
         if (!(inb(0x64) & 1)) continue;
-
         uint8_t sc = inb(0x60);
-
         if (sc == 0x2A || sc == 0x36) { shift = 1; continue; }
         if (sc == 0xAA || sc == 0xB6) { shift = 0; continue; }
         if (sc == 0x3A) { caps_lock = !caps_lock; continue; }
         if (sc & 0x80) continue;
-
         if (sc >= 128) continue;
-        
         char res = shift ? keymap_shift[sc] : keymap[sc];
         if (res == 0) continue;
-
         if (caps_lock) {
             if (res >= 'a' && res <= 'z') res -= 32;
             else if (res >= 'A' && res <= 'Z') res += 32;
         }
-        
         return res;
     }
 }
@@ -213,12 +203,6 @@ void trim(char* s) {
     }
 }
 
-char* arg(char* s) {
-    if (!s) return NULL;
-    while (*s && *s != ' ') s++;
-    return skip(s);
-}
-
 // ================= FILESYSTEM =================
 typedef struct Folder Folder;
 typedef struct { char name[32]; char content[128]; } File;
@@ -266,7 +250,6 @@ void init_fs() {
     }
 }
 
-// ================= COMMANDS =================
 void cf(char* name) {
     if (folder_used >= MAX_FOLDERS || current->folder_count >= MAX_FOLDERS) {
         print("\nerror: Folder limit reached");
@@ -295,8 +278,8 @@ void rf(char* name) {
                 print("\nerror: Folder not empty");
                 return;
             }
-            current->folders[i] = current->folders[current->folder_count - 1];
-            current->folders[current->folder_count - 1] = 0;
+            for (int k = i; k < current->folder_count - 1; k++)
+                current->folders[k] = current->folders[k+1];
             current->folder_count--;
             return;
         }
@@ -387,11 +370,8 @@ void pwd_recursive(Folder* f) {
 
 void pwd() {
     print("\n");
-    if (current == &root) {
-        print("/");
-    } else {
-        pwd_recursive(current);
-    }
+    if (current == &root) print("/");
+    else pwd_recursive(current);
 }
 
 void mv(char* src, char* dst) {
@@ -416,10 +396,10 @@ void mv(char* src, char* dst) {
             for (int j = 0; j < current->folder_count; j++) {
                 if (current->folders[j] && streq(current->folders[j]->name, src)) {
                     if (target->folder_count >= MAX_FOLDERS) { print("\nerror: Target full"); return; }
-                    target->folders[target->folder_count++] = current->folders[j];
-                    current->folders[j]->parent = target;
-                    current->folders[j] = current->folders[current->folder_count - 1];
-                    current->folders[current->folder_count - 1] = 0;
+                    Folder* moving = current->folders[j];
+                    target->folders[target->folder_count++] = moving;
+                    moving->parent = target;
+                    for (int k = j; k < current->folder_count - 1; k++) current->folders[k] = current->folders[k+1];
                     current->folder_count--;
                     return;
                 }
@@ -456,11 +436,13 @@ void cp(char* src, char* dst) {
                     if (folder_used >= MAX_FOLDERS || target->folder_count >= MAX_FOLDERS) { print("\nerror: Limit reached"); return; }
                     Folder* nf = &folder_pool[folder_used++];
                     nf->parent = target; 
-                    nf->file_count = current->folders[j]->file_count; 
-                    nf->folder_count = 0; // Shallow copy: subfolders not supported yet
+                    nf->file_count = 0;
+                    nf->folder_count = 0;
                     for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
                     strncpy_safe(nf->name, src, 32);
-                    for(int x=0; x<nf->file_count; x++) nf->files[x] = current->folders[j]->files[x];
+                    for(int x=0; x < current->folders[j]->file_count; x++) {
+                        nf->files[nf->file_count++] = current->folders[j]->files[x];
+                    }
                     target->folders[target->folder_count++] = nf;
                     return;
                 }
@@ -483,11 +465,13 @@ void cp(char* src, char* dst) {
             if (folder_used >= MAX_FOLDERS || current->folder_count >= MAX_FOLDERS) { print("\nerror: Limit reached"); return; }
             Folder* nf = &folder_pool[folder_used++];
             nf->parent = current; 
-            nf->file_count = current->folders[i]->file_count; 
+            nf->file_count = 0;
             nf->folder_count = 0;
             for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
             strncpy_safe(nf->name, dst, 32);
-            for(int x=0; x<nf->file_count; x++) nf->files[x] = current->folders[i]->files[x];
+            for(int x=0; x < current->folders[i]->file_count; x++) {
+                nf->files[nf->file_count++] = current->folders[i]->files[x];
+            }
             current->folders[current->folder_count++] = nf;
             return;
         }
@@ -521,27 +505,27 @@ static char* next_arg(char* s, char* out) {
 
 void execute(char* cmd) {
     cmd = skip(cmd); clean(cmd);
-    if (streq(cmd, "ls") || starts_with(cmd, "ls ")) ls();
-    else if (streq(cmd, "cd") || starts_with(cmd, "cd ")) cd(get_args(cmd));
-    else if (streq(cmd, "cf") || starts_with(cmd, "cf ")) cf(get_args(cmd));
-    else if (streq(cmd, "rf") || starts_with(cmd, "rf ")) rf(get_args(cmd));
-    else if (streq(cmd, "rt") || starts_with(cmd, "rt ")) rt(get_args(cmd));
-    else if (streq(cmd, "fl") || starts_with(cmd, "fl ") || starts_with(cmd, "lf")) fl(get_args(cmd));
-    else if (starts_with(cmd, "ct")) {
+    if (streq(cmd, "ls")) ls();
+    else if (starts_with(cmd, "cd ")) cd(get_args(cmd));
+    else if (starts_with(cmd, "cf ")) cf(get_args(cmd));
+    else if (starts_with(cmd, "rf ")) rf(get_args(cmd));
+    else if (starts_with(cmd, "rt ")) rt(get_args(cmd));
+    else if (starts_with(cmd, "fl ")) fl(get_args(cmd));
+    else if (starts_with(cmd, "ct ")) {
         char* p = get_args(cmd); char* eq = p;
         while (*eq && *eq != '=') eq++;
         if (*eq == 0) { print("\nerror: Invalid ct format"); return; }
         *eq = 0; ct(p, eq + 1);
     }
-    else if (starts_with(cmd, "echo")) echo(cmd + 4);
+    else if (starts_with(cmd, "echo ")) echo(cmd + 5);
     else if (streq(cmd, "cl")) clear();
-    else if (starts_with(cmd, "mv")) {
+    else if (starts_with(cmd, "mv ")) {
         char* args = get_args(cmd); char a[32], b[32];
         args = next_arg(args, a); next_arg(args, b);
         if (!a[0] || !b[0]) { print("\nerror: Invalid arguments"); return; }
         mv(a, b);
     }
-    else if (starts_with(cmd, "cp")) {
+    else if (starts_with(cmd, "cp ")) {
         char* args = get_args(cmd); char a[32], b[32];
         args = next_arg(args, a); next_arg(args, b);
         if (!a[0] || !b[0]) { print("\nerror: Invalid arguments"); return; }
