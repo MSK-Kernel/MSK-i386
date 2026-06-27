@@ -30,3 +30,6 @@ Copy file(s) or folder(s)
 
 11) mv <file/folder_name> <folder_name> | mv <file/folder_name> new_file/folder_name>
 Move or rename file(s) or folder(s)
+
+12) pwd
+Shows current directory path
