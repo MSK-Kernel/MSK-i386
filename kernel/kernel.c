@@ -10,7 +10,7 @@
 
 // ================= VGA =================
 uint16_t* VGA = (uint16_t*)0xB8000;
-int cursor = 0;
+int cursor = 0; // Now represents character index, not byte offset
 
 // ================= FORWARD DECLARATIONS =================
 void print(const char* s);
@@ -57,7 +57,7 @@ static inline void set_hw_cursor_cell(int cell_pos) {
 }
 
 static inline void sync_cursor_hw() {
-    set_hw_cursor_cell(cursor / 2);
+    set_hw_cursor_cell(cursor);
 }
 
 void enable_block_cursor() {
@@ -79,29 +79,30 @@ void scroll() {
     for (int i = VGA_WIDTH * (VGA_HEIGHT - 1); i < VGA_WIDTH * VGA_HEIGHT; i++)
         VGA[i] = VGA_COLOR | ' ';
 
-    cursor = VGA_WIDTH * (VGA_HEIGHT - 1) * 2;
+    cursor = VGA_WIDTH * (VGA_HEIGHT - 1);
 }
 
 void putc(char c) {
     if (c == '\n') {
-        cursor += (VGA_WIDTH * 2) - (cursor % (VGA_WIDTH * 2));
+        cursor += VGA_WIDTH - (cursor % VGA_WIDTH);
     } else if (c == '\b') {
         if (cursor > 0) {
-            cursor -= 2;
-            VGA[cursor / 2] = VGA_COLOR | ' ';
+            cursor--;
+            VGA[cursor] = VGA_COLOR | ' ';
         }
     } else {
-        VGA[cursor / 2] = VGA_COLOR | (uint8_t)c;
-        cursor += 2;
+        VGA[cursor] = VGA_COLOR | (uint8_t)c;
+        cursor++;
     }
 
-    if (cursor >= VGA_WIDTH * VGA_HEIGHT * 2)
+    if (cursor >= VGA_WIDTH * VGA_HEIGHT)
         scroll();
     
     sync_cursor_hw();
 }
 
 void print(const char* s) {
+    if (!s) return;
     while (*s) putc(*s++);
 }
 
@@ -114,8 +115,8 @@ void clear() {
 
 void backspace() {
     if (cursor > 0) {
-        cursor -= 2;
-        VGA[cursor / 2] = VGA_COLOR | ' ';
+        cursor--;
+        VGA[cursor] = VGA_COLOR | ' ';
     }
     sync_cursor_hw();
 }
@@ -158,13 +159,9 @@ char get_key() {
         char res = shift ? keymap_shift[sc] : keymap[sc];
         if (res == 0) continue;
 
-        // Handle Caps Lock for alphabetic characters
         if (caps_lock) {
-            if (res >= 'a' && res <= 'z') {
-                res -= 32;
-            } else if (res >= 'A' && res <= 'Z') {
-                res += 32;
-            }
+            if (res >= 'a' && res <= 'z') res -= 32;
+            else if (res >= 'A' && res <= 'Z') res += 32;
         }
         
         return res;
@@ -173,13 +170,12 @@ char get_key() {
 
 // ================= HELPERS =================
 int streq(const char* a, const char* b) {
-    if (!a || !b) return 0;
-    int i = 0;
-    while (a[i] && b[i]) {
-        if (a[i] != b[i]) return 0;
-        i++;
+    if (!a || !b) return a == b;
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++; b++;
     }
-    return a[i] == 0 && b[i] == 0;
+    return *a == *b;
 }
 
 void strncpy_safe(char* dst, const char* src, int n) {
@@ -202,8 +198,7 @@ void clean(char* s) {
     if (!s) return;
     int i = 0;
     while (s[i]) {
-        if (s[i] == '\n' || s[i] == '\r')
-            s[i] = 0;
+        if (s[i] == '\n' || s[i] == '\r') s[i] = 0;
         i++;
     }
 }
@@ -277,29 +272,22 @@ void cf(char* name) {
         print("\nerror: Folder limit reached");
         return;
     }
-
-    name = skip(name);
-    trim(name);
-
+    name = skip(name); trim(name);
     if (name[0] == 0 || name_exists(name)) {
         print("\nerror: Invalid name or already exists");
         return;
     }
-
     Folder* f = &folder_pool[folder_used++];
     f->folder_count = 0;
     f->file_count = 0;
     f->parent = current;
     for (int i = 0; i < MAX_FOLDERS; i++) f->folders[i] = 0;
     strncpy_safe(f->name, name, 32);
-
     current->folders[current->folder_count++] = f;
 }
 
 void rf(char* name) {
-    name = skip(name);
-    trim(name);
-
+    name = skip(name); trim(name);
     for (int i = 0; i < current->folder_count; i++) {
         Folder* f = current->folders[i];
         if (f && streq(f->name, name)) {
@@ -321,23 +309,18 @@ void ct(char* name, char* content) {
         print("\nerror: File limit reached");
         return;
     }
-
-    name = skip(name);
-    trim(name);
+    name = skip(name); trim(name);
     if (name[0] == 0 || name_exists(name)) {
         print("\nerror: Invalid name or already exists");
         return;
     }
-
     File* f = &current->files[current->file_count++];
     strncpy_safe(f->name, name, 32);
     strncpy_safe(f->content, skip(content), 128);
 }
 
 void rt(char* name) {
-    name = skip(name);
-    trim(name);
-
+    name = skip(name); trim(name);
     for (int i = 0; i < current->file_count; i++) {
         if (streq(current->files[i].name, name)) {
             for (int j = i; j < current->file_count - 1; j++)
@@ -350,12 +333,9 @@ void rt(char* name) {
 }
 
 void cd(char* name) {
-    name = skip(name);
-    trim(name);
-
+    name = skip(name); trim(name);
     if (name[0] == 0) { current = &root; return; }
     if (streq(name, "..")) { if (current->parent) current = current->parent; return; }
-
     for (int i = 0; i < current->folder_count; i++) {
         if (current->folders[i] && streq(current->folders[i]->name, name)) {
             current = current->folders[i];
@@ -366,8 +346,7 @@ void cd(char* name) {
 }
 
 void fl(char* name) {
-    name = skip(name);
-    trim(name);
+    name = skip(name); trim(name);
     for (int i = 0; i < current->file_count; i++) {
         if (streq(current->files[i].name, name)) {
             print("\n");
@@ -399,41 +378,34 @@ void ls() {
     }
 }
 
+void pwd_recursive(Folder* f) {
+    if (!f || f == &root) return;
+    pwd_recursive(f->parent);
+    print("/");
+    print(f->name);
+}
+
 void pwd() {
-    if (current == &root) { print("\n/"); return; }
-    char temp[256];
-    int pos = 255;
-    temp[pos] = 0;
-    Folder* f = current;
-    while (f && f != &root) {
-        int len = 0;
-        while (f->name[len] && len < 31) len++;
-        if (len == 0 || pos <= len + 1) break;
-        pos -= len;
-        for (int i = 0; i < len; i++) temp[pos + i] = f->name[i];
-        temp[--pos] = '/';
-        f = f->parent;
-    }
     print("\n");
-    print(&temp[pos]);
+    if (current == &root) {
+        print("/");
+    } else {
+        pwd_recursive(current);
+    }
 }
 
 void mv(char* src, char* dst) {
     src = skip(src); dst = skip(dst);
     trim(src); trim(dst);
-
     if (!src[0] || !dst[0] || streq(src, dst)) {
         print("\nerror: Invalid arguments");
         return;
     }
-
     for (int i = 0; i < current->folder_count; i++) {
         Folder* target = current->folders[i];
         if (target && streq(target->name, dst)) {
             for (int j = 0; j < current->file_count; j++) {
                 if (streq(current->files[j].name, src)) {
-                    for(int x=0; x<target->file_count; x++)
-                        if(streq(target->files[x].name, src)) { print("\nerror: Name exists in target"); return; }
                     if (target->file_count >= MAX_FILES) { print("\nerror: Target full"); return; }
                     target->files[target->file_count++] = current->files[j];
                     for (int k = j; k < current->file_count - 1; k++) current->files[k] = current->files[k+1];
@@ -444,8 +416,6 @@ void mv(char* src, char* dst) {
             for (int j = 0; j < current->folder_count; j++) {
                 if (current->folders[j] && streq(current->folders[j]->name, src)) {
                     if (target->folder_count >= MAX_FOLDERS) { print("\nerror: Target full"); return; }
-                    for(int x=0; x<target->folder_count; x++)
-                        if(streq(target->folders[x]->name, src)) { print("\nerror: Name exists in target"); return; }
                     target->folders[target->folder_count++] = current->folders[j];
                     current->folders[j]->parent = target;
                     current->folders[j] = current->folders[current->folder_count - 1];
@@ -456,9 +426,7 @@ void mv(char* src, char* dst) {
             }
         }
     }
-
     if (name_exists(dst)) { print("\nerror: Name exists"); return; }
-
     for (int i = 0; i < current->file_count; i++) {
         if (streq(current->files[i].name, src)) { strncpy_safe(current->files[i].name, dst, 32); return; }
     }
@@ -471,7 +439,6 @@ void mv(char* src, char* dst) {
 void cp(char* src, char* dst) {
     src = skip(src); dst = skip(dst);
     trim(src); trim(dst);
-
     if (!src[0] || !dst[0] || streq(src, dst)) { print("\nerror: Invalid arguments"); return; }
 
     for (int i = 0; i < current->folder_count; i++) {
@@ -479,8 +446,6 @@ void cp(char* src, char* dst) {
         if (target && streq(target->name, dst)) {
             for (int j = 0; j < current->file_count; j++) {
                 if (streq(current->files[j].name, src)) {
-                    for(int x=0; x<target->file_count; x++)
-                        if(streq(target->files[x].name, src)) { print("\nerror: Name exists in target"); return; }
                     if (target->file_count >= MAX_FILES) { print("\nerror: Target full"); return; }
                     target->files[target->file_count++] = current->files[j];
                     return;
@@ -489,12 +454,10 @@ void cp(char* src, char* dst) {
             for (int j = 0; j < current->folder_count; j++) {
                 if (current->folders[j] && streq(current->folders[j]->name, src)) {
                     if (folder_used >= MAX_FOLDERS || target->folder_count >= MAX_FOLDERS) { print("\nerror: Limit reached"); return; }
-                    for(int x=0; x<target->folder_count; x++)
-                        if(streq(target->folders[x]->name, src)) { print("\nerror: Name exists in target"); return; }
                     Folder* nf = &folder_pool[folder_used++];
                     nf->parent = target; 
                     nf->file_count = current->folders[j]->file_count; 
-                    nf->folder_count = 0;
+                    nf->folder_count = 0; // Shallow copy: subfolders not supported yet
                     for (int x = 0; x < MAX_FOLDERS; x++) nf->folders[x] = 0;
                     strncpy_safe(nf->name, src, 32);
                     for(int x=0; x<nf->file_count; x++) nf->files[x] = current->folders[j]->files[x];
@@ -597,7 +560,7 @@ void shell() {
             char c = get_key();
             if (c == '\n') { putc('\n'); break; }
             if (c == 8) { if (i > 0) { i--; backspace(); } continue; }
-            if (i < 255) { buffer[i++] = c; putc(c); }
+            if (i < 254) { buffer[i++] = c; putc(c); }
         }
         buffer[i] = 0;
         execute(buffer);
