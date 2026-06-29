@@ -1,5 +1,5 @@
-CC=i686-linux-gnu-gcc
-LD=i686-linux-gnu-ld
+CC=gcc
+LD=ld
 ASM=nasm
 
 CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie
