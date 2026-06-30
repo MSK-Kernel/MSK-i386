@@ -13,6 +13,20 @@ uint16_t* VGA = (uint16_t*)0xB8000;
 int cursor = 0;
 
 // ============================================================
+// GLOBAL VARIABLES
+// ============================================================
+
+int caps_lock = 0;
+
+// Special key codes
+#define KEY_UP     0x80
+#define KEY_DOWN   0x81
+#define KEY_LEFT   0x82
+#define KEY_RIGHT  0x83
+#define KEY_ENTER  0x84
+#define KEY_BACKSPACE 0x85
+
+// ============================================================
 // PORT I/O
 // ============================================================
 
@@ -121,15 +135,56 @@ char keymap_shift[128] = {
     0,'*',0,' '
 };
 
-char get_key() {
+char keymap_caps[128] = {
+    0,27,'1','2','3','4','5','6','7','8','9','0','-','=',
+    8,9,'Q','W','E','R','T','Y','U','I','O','P','[',']','\n',
+    0,'A','S','D','F','G','H','J','K','L',';','\'','`',
+    0,'\\','Z','X','C','V','B','N','M',',','.','/',
+    0,'*',0,' '
+};
+
+int get_key() {
     while (1) {
         if (!(inb(0x64) & 1)) continue;
         uint8_t sc = inb(0x60);
+        
+        // Shift keys
         if (sc == 0x2A || sc == 0x36) { shift = 1; continue; }
         if (sc == 0xAA || sc == 0xB6) { shift = 0; continue; }
+        
+        // Caps Lock
+        if (sc == 0x3A) {
+            caps_lock = !caps_lock;
+            continue;
+        }
+        
+        // Extended keys (arrow keys, etc.)
+        if (sc == 0xE0) {
+            while (!(inb(0x64) & 1)) continue;
+            uint8_t ext_sc = inb(0x60);
+            
+            // Return special codes for arrow keys
+            if (ext_sc == 0x48) return KEY_UP;
+            if (ext_sc == 0x50) return KEY_DOWN;
+            if (ext_sc == 0x4B) return KEY_LEFT;
+            if (ext_sc == 0x4D) return KEY_RIGHT;
+            continue;
+        }
+        
+        // Ignore key releases
         if (sc & 0x80) continue;
         if (sc >= 128) continue;
-        char res = shift ? keymap_shift[sc] : keymap[sc];
+        
+        // Determine which keymap to use
+        char res;
+        if (caps_lock && !shift) {
+            res = keymap_caps[sc];
+        } else if (shift) {
+            res = keymap_shift[sc];
+        } else {
+            res = keymap[sc];
+        }
+        
         if (res == 0) continue;
         return res;
     }
@@ -148,12 +203,6 @@ int streq(const char* a, const char* b) {
     return *a == *b;
 }
 
-char* skip(char* s) {
-    if (!s) return NULL;
-    while (*s == ' ') s++;
-    return s;
-}
-
 void clean(char* s) {
     if (!s) return;
     int i = 0;
@@ -161,6 +210,103 @@ void clean(char* s) {
         if (s[i] == '\n' || s[i] == '\r') s[i] = 0;
         i++;
     }
+}
+
+// ============================================================
+// INPUT FUNCTIONS
+// ============================================================
+
+void read_line(char* buffer, int max_len) {
+    char line[256];
+    int pos = 0;
+    int len = 0;
+    int prompt_start = cursor;
+    
+    while (1) {
+        int key = get_key();
+        
+        if (key == '\n' || key == KEY_ENTER) {
+            putc('\n');
+            break;
+        }
+        
+        if (key == 8 || key == KEY_BACKSPACE) {
+            if (pos > 0) {
+                // Move cursor left
+                cursor--;
+                // Shift characters left
+                for (int i = pos - 1; i < len - 1; i++) {
+                    line[i] = line[i + 1];
+                }
+                len--;
+                pos--;
+                // Redraw from cursor position
+                cursor = prompt_start + pos;
+                sync_cursor();
+                for (int i = pos; i < len; i++) {
+                    VGA[cursor] = VGA_COLOR | (uint8_t)line[i];
+                    cursor++;
+                }
+                VGA[cursor] = VGA_COLOR | ' ';
+                cursor = prompt_start + pos;
+                sync_cursor();
+            }
+            continue;
+        }
+        
+        // Arrow keys
+        if (key == KEY_LEFT) {
+            if (pos > 0) {
+                pos--;
+                cursor = prompt_start + pos;
+                sync_cursor();
+            }
+            continue;
+        }
+        
+        if (key == KEY_RIGHT) {
+            if (pos < len) {
+                pos++;
+                cursor = prompt_start + pos;
+                sync_cursor();
+            }
+            continue;
+        }
+        
+        if (key == KEY_UP || key == KEY_DOWN) {
+            // History not implemented yet - just ignore
+            continue;
+        }
+        
+        // Regular character (must be printable)
+        if (key >= 32 && key <= 126) {
+            if (len < max_len - 1) {
+                // Insert character at cursor position
+                for (int i = len; i > pos; i--) {
+                    line[i] = line[i - 1];
+                }
+                line[pos] = (char)key;
+                len++;
+                pos++;
+                
+                // Redraw from cursor position
+                cursor = prompt_start + pos - 1;
+                sync_cursor();
+                for (int i = pos - 1; i < len; i++) {
+                    VGA[cursor] = VGA_COLOR | (uint8_t)line[i];
+                    cursor++;
+                }
+                cursor = prompt_start + pos;
+                sync_cursor();
+            }
+        }
+    }
+    
+    // Copy to buffer
+    for (int i = 0; i < len; i++) {
+        buffer[i] = line[i];
+    }
+    buffer[len] = 0;
 }
 
 // ============================================================
@@ -198,13 +344,15 @@ void list_commands(void) {
     print("\n");
     print("Available commands:\n");
     for (int i = 0; i < cmd_count; i++) {
+        print("  ");
         print(cmd_table[i].name);
         print("\n");
     }
+    print("\n");
 }
 
 // ============================================================
-// EXECUTE COMMAND - With argument parsing
+// EXECUTE COMMAND
 // ============================================================
 
 void execute_command(const char* cmd_line) {
@@ -249,15 +397,8 @@ void execute_command(const char* cmd_line) {
 void shell() {
     char buffer[256];
     while (1) {
-        print("\nroot:~# ");
-        int i = 0;
-        while (1) {
-            char c = get_key();
-            if (c == '\n') { putc('\n'); break; }
-            if (c == 8) { if (i > 0) { i--; backspace(); } continue; }
-            if (i < 254) { buffer[i++] = c; putc(c); }
-        }
-        buffer[i] = 0;
+        print("root:~# ");
+        read_line(buffer, 256);
         clean(buffer);
         if (buffer[0]) {
             execute_command(buffer);
@@ -266,7 +407,7 @@ void shell() {
 }
 
 // ============================================================
-// INIT - Called from Makefile generated init.c
+// INIT
 // ============================================================
 
 extern void init_cmds(void);
