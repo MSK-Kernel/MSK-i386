@@ -48,10 +48,20 @@ cmd/init.o: cmd/init.c
 
 # Link everything
 output/image/msk-i386: output/build/boot.o output/build/kernel.o cmd/init.o $(CMD_OBJ) | output/image
-	@echo "Linking with $(words $(CMD_NAMES)) commands: $(CMD_NAMES)"
+	@echo "[INFO] Linking with $(words $(CMD_NAMES)) commands: $(CMD_NAMES)"
 	$(LD) $(LDFLAGS) -o output/image/msk-i386 output/build/boot.o output/build/kernel.o cmd/init.o $(CMD_OBJ)
-
+	@echo
+	@echo "[INFO] Kernel ready at output/image/msk-i386"
+	@echo
 clean:
 	rm -rf output
 	rm -f cmd/*.o
 	rm -f cmd/init.c
+
+run: all
+	qemu-system-x86_64 -m 64 -kernel output/image/msk-i386
+
+run-debug: all
+	qemu-system-x86_64 -m 64 -kernel output/image/msk-i386 -s -S
+
+.PHONY: all clean run run-debug
