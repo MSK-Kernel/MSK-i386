@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "../include/ata.h"
 
 // ============================================================
 // VGA CONSTANTS
@@ -446,6 +447,50 @@ void execute_command(const char* cmd_line) {
 }
 
 // ============================================================
+// MEDIALIST COMMAND
+// ============================================================
+
+// ---- Command: medialist (list drive names and sizes) ----
+void cmd_medialist(char* args) {
+    (void)args;  // unused
+    
+    print("\n");
+    print("Detected disks:\n");
+    
+    ata_drive_info_t master_info;
+    ata_drive_info_t slave_info;
+    
+    int drive_count = 0;
+    
+    // Check Primary Master
+    if (ata_detect_drive(0, 0, &master_info)) {
+        drive_count++;
+        print("  ");
+        print(master_info.model);
+        print(" (");
+        print_dec(master_info.sectors / 2 / 1024 / 1024);
+        print(" GB)\n");
+    }
+    
+    // Check Primary Slave
+    if (ata_detect_drive(0, 1, &slave_info)) {
+        drive_count++;
+        print("  ");
+        print(slave_info.model);
+        print(" (");
+        print_dec(slave_info.sectors / 2 / 1024 / 1024);
+        print(" GB)\n");
+    }
+    
+    // If no drives found
+    if (drive_count == 0) {
+        print("  No drives detected.\n");
+    }
+    
+    print("\n");
+}
+
+// ============================================================
 // KERNEL PANIC
 // ============================================================
 
@@ -554,18 +599,20 @@ void kernel_main() {
     block_cursor();
     clear_screen();
     
-    init_cmds();
+    init_cmds();   // load your base commands (e.g., from cmd/ folder)
     
+    // --- Check for commands BEFORE registering MSK Workstation commands ---
+    // This preserves the original panic behavior for empty /cmd
     if (cmd_count == 0) {
         uint32_t boot_time;
         asm volatile ("rdtsc" : "=a"(boot_time));
-        boot_time = boot_time / 1000000; // Convert to milliseconds
+        boot_time = boot_time / 1000000;
         
         print("[    ");
         print_dec_pad(boot_time, 1);
         print(".");
-        print_dec(0);  // milliseconds decimal
-        print("] --- Kernel panic: not syncing: Failed to load command(s)\n");
+        print_dec(0);
+        print("] --- Kernel panic: not syncing: Failed to load command(s) ---\n");
         print("[    ");
         print_dec_pad(boot_time, 1);
         print(".");
@@ -590,6 +637,9 @@ void kernel_main() {
             asm volatile ("cli; hlt");
         }
     }
+    
+    // --- Register MSK Workstation commands (only if /cmd loaded successfully) ---
+    register_cmd("medialist", cmd_medialist);
     
     shell();
 }
